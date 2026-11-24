@@ -159,6 +159,9 @@ def ollama_log_path() -> str:
 # ---------------------------------------------------------------- vLLM init log profile
 
 _VLLM_LOG_LIMIT = 512 << 10
+_VLLM_LOG_MAX_SCAN = 32 << 20
+_VLLM_LOG_HEAD_FALLBACK = 2 << 20
+_VLLM_LOG_SCAN_OVERLAP = 4 << 10
 _VLLM_LOG_UNITS = {
     "gib": 1 << 30,
     "gb": 1 << 30,
@@ -200,8 +203,16 @@ _VLLM_ISO_TS_RX = re.compile(
     r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
 _VLLM_SHORT_TS_RX = re.compile(r"\b(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\b")
+_VLLM_INIT_BYTES_RX = re.compile(
+    rb"(?:Model loading took|Loading model weights took|weights memory:|model weights take|"
+    rb"Available KV cache memory:|reserved for KV Cache is|KV cache size:|#\s*GPU blocks:|"
+    rb"torch peak memory increase|PyTorch activation peak memory takes|"
+    rb"non[-_ ]torch(?: forward)?(?: increase)? memory|non_torch_memory takes|"
+    rb"Graph capturing finished in)",
+    re.I,
+)
 
-_vllm_log_cache: dict[tuple[str, float], tuple[tuple[int, int], VllmInitProfile | None]] = {}
+_vllm_log_cache: dict[tuple[str, float], tuple[tuple[int, int, int], VllmInitProfile | None]] = {}
 
 
 @dataclass
@@ -306,13 +317,66 @@ def _decode_vllm_log_line(raw_line: str) -> tuple[str, str | None, float | None]
     return stripped, ts_str, ts_epoch
 
 
+def _read_latest_vllm_init_lines(f, file_size: int) -> list[str]:
+    """Read a bounded window containing the latest vLLM startup block.
+
+    Scans backwards in 512 KiB chunks up to `_VLLM_LOG_MAX_SCAN` (32 MiB) so
+    long-running or restarted servers whose logs grew past 512 KiB still expose
+    their most recent init profile. If nothing is found in the last 32 MiB of a
+    very large log, falls back to the first `_VLLM_LOG_HEAD_FALLBACK` (2 MiB).
+    """
+    if file_size <= 0:
+        return []
+    if file_size <= _VLLM_LOG_LIMIT:
+        f.seek(0)
+        return f.read(file_size).decode("utf-8", "replace").splitlines()
+
+    min_offset = max(0, file_size - _VLLM_LOG_MAX_SCAN)
+    end = file_size
+    while end > min_offset:
+        start = max(min_offset, end - _VLLM_LOG_LIMIT)
+        read_end = min(file_size, end + _VLLM_LOG_SCAN_OVERLAP) if end < file_size else file_size
+        f.seek(start)
+        chunk = f.read(read_end - start)
+        if _VLLM_INIT_BYTES_RX.search(chunk):
+            win_start = max(0, start - _VLLM_LOG_LIMIT)
+            win_end = min(file_size, read_end + (128 << 10))
+            f.seek(win_start)
+            data = f.read(win_end - win_start)
+            if win_start > 0:
+                data = data.partition(b"\n")[2]
+            return data.decode("utf-8", "replace").splitlines()
+        end = start
+
+    if min_offset > 0:
+        f.seek(0)
+        head = f.read(min(file_size, _VLLM_LOG_HEAD_FALLBACK))
+        if _VLLM_INIT_BYTES_RX.search(head):
+            return head.decode("utf-8", "replace").splitlines()
+    return []
+
+
+def _vllm_profile_staleness(
+    timestamp_epoch: float | None,
+    file_mtime: float,
+    process_start: float,
+) -> tuple[bool, str | None]:
+    if process_start > 0:
+        if timestamp_epoch is not None:
+            if timestamp_epoch < process_start - 5:
+                return True, "init log timestamp predates process start"
+        elif file_mtime < process_start - 5:
+            return True, "init log mtime predates process start"
+    return False, None
+
+
 def parse_vllm_init_log(path: str, process_start: float = 0.0) -> VllmInitProfile | None:
-    """Parse the most recent vLLM startup block from a bounded (512 KiB) mtime-cached log tail."""
+    """Parse the most recent vLLM startup block using bounded reverse-chunk scanning and append-only caching."""
     try:
         st = os.stat(path)
     except OSError:
         return None
-    sig = (st.st_mtime_ns, st.st_size)
+    sig = (st.st_ino, st.st_mtime_ns, st.st_size)
     cache_key = (path, process_start)
     hit = _vllm_log_cache.get(cache_key)
     if hit and hit[0] == sig:
@@ -320,14 +384,46 @@ def parse_vllm_init_log(path: str, process_start: float = 0.0) -> VllmInitProfil
 
     try:
         with open(path, "rb") as f:
-            offset = max(f.seek(0, os.SEEK_END) - _VLLM_LOG_LIMIT, 0)
-            f.seek(offset)
-            tail = f.read(_VLLM_LOG_LIMIT)
+            file_size = st.st_size
+            # Steady-state append-only fast path: when the same inode only grew,
+            # inspect only newly appended bytes for a new startup block.
+            if hit is not None:
+                prev_ino, _prev_mtime_ns, prev_size = hit[0]
+                prev_profile = hit[1]
+                if (
+                    st.st_ino == prev_ino
+                    and file_size > prev_size
+                    and prev_profile is not None
+                    and (file_size - prev_size) <= _VLLM_LOG_MAX_SCAN
+                ):
+                    delta_start = prev_size
+                    if prev_size > 0:
+                        f.seek(prev_size - 1)
+                        if f.read(1) != b"\n":
+                            back = max(0, prev_size - _VLLM_LOG_SCAN_OVERLAP)
+                            f.seek(back)
+                            prefix = f.read(prev_size - back)
+                            nl = prefix.rfind(b"\n")
+                            delta_start = back + nl + 1 if nl >= 0 else back
+                    f.seek(delta_start)
+                    delta = f.read(file_size - delta_start)
+                    if not _VLLM_INIT_BYTES_RX.search(delta):
+                        stale, stale_reason = _vllm_profile_staleness(
+                            prev_profile.timestamp_epoch,
+                            st.st_mtime,
+                            process_start,
+                        )
+                        updated = dataclasses.replace(
+                            prev_profile,
+                            file_mtime=st.st_mtime,
+                            stale=stale,
+                            stale_reason=stale_reason,
+                        )
+                        _vllm_log_cache[cache_key] = (sig, updated)
+                        return updated
+            lines = _read_latest_vllm_init_lines(f, file_size)
     except OSError:
         return None
-    if offset:
-        tail = tail.partition(b"\n")[2]
-    lines = tail.decode("utf-8", "replace").splitlines()
 
     def _empty_block() -> dict:
         return {
@@ -424,16 +520,7 @@ def parse_vllm_init_log(path: str, process_start: float = 0.0) -> VllmInitProfil
             act_peak = None
 
         file_mtime = st.st_mtime
-        stale = False
-        stale_reason = None
-        if process_start > 0:
-            if block["timestamp_epoch"] is not None:
-                if block["timestamp_epoch"] < process_start - 5:
-                    stale = True
-                    stale_reason = "init log timestamp predates process start"
-            elif file_mtime < process_start - 5:
-                stale = True
-                stale_reason = "init log mtime predates process start"
+        stale, stale_reason = _vllm_profile_staleness(block["timestamp_epoch"], file_mtime, process_start)
 
         result = VllmInitProfile(
             path=path,

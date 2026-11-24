@@ -3,7 +3,7 @@
 **An `htop` for what's inside your GPU — extended for vLLM GPU Memory Breakdown, optional `config.yaml` endpoint/log knobs, and 3-pane TUI layout cycling.**
 
 > **Upstream Credit & Versioning Policy**: This repository is a vLLM-focused fork of [**shanselman/gputaskman**](https://github.com/shanselman/gputaskman) (`v0.4.5`, MIT License, Copyright Scott Hanselman).
-> To respect upstream versioning without bumping upstream patch numbers, releases use PEP 440 local SemVer tags on top of the upstream base: **`0.4.5+vllm.<major>.<minor>.<patch>`** (currently `0.4.5+vllm.0.1.1`).
+> To respect upstream versioning without bumping upstream patch numbers, releases use PEP 440 local SemVer tags on top of the upstream base: **`0.4.5+vllm.<major>.<minor>.<patch>`** (currently `0.4.5+vllm.0.1.2`).
 > Full upstream platform documentation (Windows WDDM/TCC, Linux DRM/Ascend, WSL2, macOS Metal, `diff`/`record`/`summary`/`replay`) is preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md).
 
 ---
@@ -28,7 +28,7 @@ uv tool install .
 
 ```bash
 gputaskman --version
-# gputaskman 0.4.5+vllm.0.1.1
+# gputaskman 0.4.5+vllm.0.1.2
 ```
 
 ### 2) 실행 방법 — 무설정 자동 감지 vs 임의 폴더 `--config <yaml>`
@@ -70,7 +70,7 @@ gputaskman --version
 
 ---
 
-## What's New in `gputaskman-vllm` (`0.4.5+vllm.0.1.1`)
+## What's New in `gputaskman-vllm` (`0.4.5+vllm.0.1.2`)
 
 ### 1. Non-Invasive Strategy B vLLM Memory Breakdown (TUI + Additive `--json`/`--once`)
 
@@ -105,6 +105,7 @@ Sources: NVML + Init Profile + Metrics
   - Handles `VLLM::EngineCore` internal ephemeral ZMQ/RPC ports (`>= 32768`) without blocking parent `vllm serve` auto-detection.
   - O(1) `/proc/<pid>/fd/{1,2}` auto-discovery of redirected stdout/stderr vLLM logs on Linux (never calls slow `psutil.open_files()`).
   - Handles naive UTC container timestamps via UTC `file_mtime` fallback so Docker logs on non-UTC hosts are not falsely marked stale.
+  - Bounded reverse-chunk log scanning (up to 32 MiB) + 2 MiB head fallback + append-only incremental cache so long-running or restarted vLLM servers whose logs grow past 512 KiB never lose their startup memory profile.
 
 ### 2. Optional `config.yaml` Knob (Works From Any Directory & Docker/Remote Topologies)
 

@@ -1,6 +1,6 @@
 [project]
 name = "gputaskman-vllm"
-version = "0.4.5+vllm.0.1.1"
+version = "0.4.5+vllm.0.1.2"
 description = "vLLM-enhanced fork of gputaskman (v0.4.5): an htop for what's inside your GPU with vLLM VRAM/KV memory breakdown, optional config.yaml knob, and 3-pane layout cycling"
 readme = "README.md"
 license = "MIT"

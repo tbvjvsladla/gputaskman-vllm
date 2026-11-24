@@ -844,6 +844,120 @@ class VllmStrategyBTests(unittest.TestCase):
                     if hasattr(time, "tzset"):
                         time.tzset()
 
+    def test_parse_vllm_init_log_large_log_beyond_512k_tail(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "long_running.log"
+            filler_line = 'INFO:     127.0.0.1:54780 - "GET /metrics HTTP/1.1" 200 OK\n'
+            # Append ~1.5 MiB of serving logs after the init block (far beyond the old 512 KiB tail limit).
+            init_lines = "\n".join([
+                "(EngineCore pid=414165) INFO 11-24 16:05:29 [model_runner.py:441] Model loading took 0.93 GiB memory and 3.55 seconds",
+                "(EngineCore pid=414165) DEBUG 11-24 16:05:35 [gpu_worker.py:794] Memory profiling takes 5.17 seconds. Total non KV cache memory: 1.4GiB; torch peak memory increase: 0.26GiB; total consumed (from mem_get_info): 1.18GiB; weights memory: 0.93GiB.",
+                "(EngineCore pid=414165) INFO 11-24 16:05:35 [gpu_worker.py:795] Available KV cache memory: 3.79 GiB",
+                "(EngineCore pid=414165) INFO 11-24 16:05:38 [model_runner.py:1216] Graph capturing finished in 1 secs, took 0.09 GiB",
+                "(EngineCore pid=414165) INFO 11-24 16:05:39 [kv_cache_utils.py:1168] GPU KV cache size: 307,200 tokens, Maximum concurrency for 2,048 tokens per request: 150.00x",
+                "",
+            ])
+            log.write_text(init_lines + (filler_line * 26000), encoding="utf-8")
+            self.assertGreater(log.stat().st_size, 1_400_000)
+
+            prof = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(prof)
+            self.assertEqual(prof.weights_bytes, round(0.93 * GiB))
+            self.assertEqual(prof.activation_peak_bytes, round(0.26 * GiB))
+            self.assertEqual(prof.kv_allocated_bytes, round(3.79 * GiB))
+            self.assertEqual(prof.cuda_graph_bytes, round(0.09 * GiB))
+            self.assertEqual(prof.kv_cache_size_tokens, 307_200)
+
+    def test_parse_vllm_init_log_multi_restart_large_log_picks_latest(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "restarted.log"
+            filler_line = '(APIServer pid=413915) DEBUG 11-24 17:56:12 [loggers.py:335] Running: 0 reqs, Waiting: 0 reqs\n'
+            run1 = "\n".join([
+                "INFO 11-24 13:47:57 Model loading took 0.93 GiB memory and 4.72 seconds",
+                "DEBUG 11-24 13:48:04 torch peak memory increase: 0.07GiB",
+                "INFO 11-24 13:48:04 Available KV cache memory: 4.12 GiB",
+                "INFO 11-24 13:48:11 GPU KV cache size: 327,680 tokens",
+                "",
+            ])
+            run2 = "\n".join([
+                "INFO 11-24 16:05:29 Model loading took 1.15 GiB memory and 3.55 seconds",
+                "DEBUG 11-24 16:05:35 torch peak memory increase: 0.26GiB",
+                "INFO 11-24 16:05:35 Available KV cache memory: 3.79 GiB",
+                "INFO 11-24 16:05:38 Graph capturing finished in 1 secs, took 0.09 GiB",
+                "INFO 11-24 16:05:39 GPU KV cache size: 307,200 tokens",
+                "",
+            ])
+            # Run 1 at start, ~600 KiB of run1 traffic, Run 2 in middle, ~1.5 MiB of run2 traffic.
+            log.write_text(run1 + (filler_line * 6500) + run2 + (filler_line * 16500), encoding="utf-8")
+
+            prof = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(prof)
+            self.assertEqual(prof.weights_bytes, round(1.15 * GiB))
+            self.assertEqual(prof.activation_peak_bytes, round(0.26 * GiB))
+            self.assertEqual(prof.kv_allocated_bytes, round(3.79 * GiB))
+            self.assertEqual(prof.cuda_graph_bytes, round(0.09 * GiB))
+            self.assertEqual(prof.kv_cache_size_tokens, 307_200)
+
+    def test_parse_vllm_init_log_append_only_cache_and_restart_or_truncate(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "append.log"
+            log.write_text(
+                "INFO 11-24 16:05:29 Model loading took 0.93 GiB memory and 3.55 seconds\n"
+                "INFO 11-24 16:05:35 Available KV cache memory: 3.79 GiB\n",
+                encoding="utf-8",
+            )
+            p1 = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(p1)
+            self.assertEqual(p1.kv_allocated_bytes, round(3.79 * GiB))
+
+            # Append serving traffic only: fast path must reuse cached profile without full rescan.
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write('INFO: 127.0.0.1 - "GET /metrics HTTP/1.1" 200 OK\n' * 50)
+            with patch("gputaskman.llm._read_latest_vllm_init_lines",
+                       side_effect=AssertionError("steady-state append should not rescan entire file")):
+                p2 = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(p2)
+            self.assertEqual(p2.kv_allocated_bytes, round(3.79 * GiB))
+
+            # Append a new restart init block: must detect and update immediately.
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(
+                    "INFO 11-24 18:10:00 Model loading took 1.50 GiB memory and 2.10 seconds\n"
+                    "INFO 11-24 18:10:05 Available KV cache memory: 2.50 GiB\n"
+                )
+            p3 = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(p3)
+            self.assertEqual(p3.weights_bytes, round(1.50 * GiB))
+            self.assertEqual(p3.kv_allocated_bytes, round(2.50 * GiB))
+
+            # Truncate and rewrite with smaller file: must reset and parse fresh content.
+            log.write_text(
+                "INFO 11-24 18:20:00 Model loading took 0.50 GiB memory and 1.00 seconds\n"
+                "INFO 11-24 18:20:01 Available KV cache memory: 5.00 GiB\n",
+                encoding="utf-8",
+            )
+            p4 = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(p4)
+            self.assertEqual(p4.weights_bytes, round(0.50 * GiB))
+            self.assertEqual(p4.kv_allocated_bytes, round(5.00 * GiB))
+
+    def test_parse_vllm_init_log_head_fallback_when_exceeding_max_scan(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "huge.log"
+            filler_line = 'INFO:     127.0.0.1:54780 - "GET /metrics HTTP/1.1" 200 OK\n'
+            init_lines = (
+                "INFO 11-24 10:00:00 Model loading took 2.00 GiB memory and 4.00 seconds\n"
+                "INFO 11-24 10:00:05 Available KV cache memory: 4.50 GiB\n"
+            )
+            log.write_text(init_lines + (filler_line * 26000), encoding="utf-8")
+            self.assertGreater(log.stat().st_size, 1_400_000)
+            # Shrink _VLLM_LOG_MAX_SCAN below file size so reverse scan misses offset 0 and exercises head fallback.
+            with patch("gputaskman.llm._VLLM_LOG_MAX_SCAN", 512 << 10):
+                prof = parse_vllm_init_log(str(log))
+            self.assertIsNotNone(prof)
+            self.assertEqual(prof.weights_bytes, 2 * GiB)
+            self.assertEqual(prof.kv_allocated_bytes, round(4.50 * GiB))
+
     def test_vllm_cache_config_engine_only_labels(self):
         cfg = vllm_cache_config(METRICS + CACHE_CONFIG_METRIC)
         self.assertEqual(cfg, {
