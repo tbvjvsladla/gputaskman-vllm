@@ -1,0 +1,46 @@
+[project]
+name = "gputaskman-vllm"
+version = "0.4.5+vllm.0.1.0"
+description = "vLLM-enhanced fork of gputaskman (v0.4.5): an htop for what's inside your GPU with vLLM 2-Bar VRAM/KV memory breakdown, optional config.yaml knob, and 3-pane layout cycling"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Scott Hanselman" }
+]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "nvidia-ml-py>=13.615.71",
+    "psutil>=7.2.2",
+    "pyyaml>=6.0",
+    "textual>=8.2.8",
+]
+
+[project.scripts]
+gputaskman = "gputaskman.cli:main"
+gtm = "gputaskman.cli:main"
+gputaskman-vllm = "gputaskman.cli:main"
+
+[project.urls]
+Repository = "https://github.com/tbvjvsladla/gputaskman-vllm"
+Issues = "https://github.com/tbvjvsladla/gputaskman-vllm/issues"
+Upstream = "https://github.com/shanselman/gputaskman"
+
+[dependency-groups]
+release = ["pyinstaller==6.22.3"]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<1.0.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "gputaskman"

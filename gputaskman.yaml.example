@@ -1,0 +1,40 @@
+# gputaskman-vllm configuration example
+#
+# Save anywhere and run from any directory:
+#   gputaskman --config /path/to/gputaskman.yaml
+#
+# Auto-discovery order (when --config is omitted):
+#   1. --config <path>
+#   2. $GPUTASKMAN_CONFIG
+#   3. ./gputaskman.yaml
+#   4. ~/.config/gputaskman/config.yaml
+#   5. Zero-config auto-detection (if no file exists)
+#
+# Relative log_path / log_paths entries are resolved relative to THIS YAML file's directory.
+
+vllm:
+  # Keep true (default) to automatically detect local vLLM processes, listening ports,
+  # and /proc/<pid>/fd/{1,2} log files alongside explicit endpoints below.
+  auto_detect: true
+
+  # Optional shared fallback init log paths (used if an endpoint omits log_path).
+  # log_paths:
+  #   - /tmp/vllm_e2e.log
+
+  endpoints:
+    # Example 1: Local Native venv or Docker container vLLM (with DEBUG/INFO startup log)
+    - name: local-vllm
+      url: http://127.0.0.1:8000
+      log_path: /tmp/vllm_e2e.log
+      # Optional filters / tuning:
+      # gpu_index: 0
+      # match_pid: 308868
+      # match_model: Qwen/Qwen2.5-0.5B-Instruct
+      # timeout_s: 2.0
+
+    # Example 2: Authenticated Docker / remote vLLM endpoint (never commit raw secrets)
+    # - name: docker-vllm
+    #   url: http://127.0.0.1:8001
+    #   log_path: ./logs/vllm_docker.log
+    #   api_key_env: VLLM_API_KEY
+    #   gpu_index: 0
