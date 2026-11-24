@@ -1,4 +1,4 @@
-"""Tests for TUI 3-pane layout cycling (shortcut 'l') and vLLM 2-Bar Memory Breakdown rendering."""
+"""Tests for TUI 3-pane layout cycling (shortcut 'l') and vLLM Memory Breakdown rendering."""
 
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class PaneLayoutCycleTests(unittest.IsolatedAsyncioTestCase):
         bindings = {b.key: (b.action, b.description) for b in GpuTaskManager.BINDINGS}
         self.assertIn("l", bindings)
         self.assertEqual(bindings["l"], ("cycle_layout", "Layout"))
-        for token in ("`l` layout", "(1,2,3)", "(1,3,2)", "(3,1,2)", "(3,2,1)", "Activation Peak", "KV Cache Pool"):
+        for token in ("`l` layout", "(1,2,3)", "(1,3,2)", "(3,1,2)", "(3,2,1)", "Activation Peak", "KV Cache Unused"):
             self.assertIn(token, HELP_MD)
 
 
@@ -236,8 +236,8 @@ class VllmTwoBarBreakdownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("N/A  [requires instrumentation]", text)
                 self.assertIn("CUDA Graph", text)
                 self.assertIn("256 MB  [Init profile]", text)
-                self.assertIn("KV Cache Pool", text)
-                self.assertIn("Occupied 40.0% · Available 60.0%", text)
+                self.assertNotIn("KV Cache Pool", text)
+                self.assertNotIn("Occupied 40.0% · Available 60.0%", text)
                 self.assertIn("1.20 GB  (40.0%)  [derived; includes prefix cache]", text)
                 self.assertIn("1.80 GB  [derived]", text)
                 self.assertIn("Active Requests KV", text)
@@ -247,6 +247,14 @@ class VllmTwoBarBreakdownTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Sources: NVML + Init Profile + Metrics", text)
                 self.assertIn("Timestamps:", text)
                 self.assertIn("(configured endpoint; API report, not worker residency)", text)
+
+                # Verify updated hex colors for Activation Peak (#60afff) and KV Cache Unused (#8e6202).
+                all_styles = [str(span.style) for item in renderables for span in item.spans]
+                self.assertIn("#60afff", all_styles)
+                self.assertIn("bold #60afff", all_styles)
+                self.assertIn("#8e6202", all_styles)
+                self.assertIn("bold #8e6202", all_styles)
+                self.assertFalse(any("orange1" in s or "aquamarine1" in s for s in all_styles))
 
     async def test_zero_values_preserved_and_not_coerced_to_na(self):
         init = VllmInitProfile(
@@ -274,7 +282,7 @@ class VllmTwoBarBreakdownTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 text = _plain_inspector_text(app)
                 self.assertIn("0 MB  [NVML diff, derived]", text)
-                self.assertIn("Occupied 0.0% · Available 100.0%", text)
+                self.assertNotIn("KV Cache Pool", text)
                 self.assertIn("0 MB  (0.0%)  [derived; includes prefix cache]", text)
                 self.assertIn("4.00 GB  [derived]", text)
                 self.assertIn("0 / 0", text)
@@ -297,7 +305,8 @@ class VllmTwoBarBreakdownTests(unittest.IsolatedAsyncioTestCase):
                 app.apply(snap)
                 await pilot.pause()
                 text = _plain_inspector_text(app)
-                self.assertIn("KV   N/A  [metrics unavailable]", text)
+                self.assertNotIn("KV Cache Pool", text)
+                self.assertIn("[metrics unavailable]", text)
                 self.assertIn("N/A / N/A", text)
                 self.assertIn("Sources: NVML", text)
                 self.assertNotIn("Sources: NVML + Metrics", text)

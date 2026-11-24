@@ -181,12 +181,12 @@ Press **l** (or click **Layout** in the footer) to cycle the vertical order of t
 `(1,2,3) → (1,3,2) → (3,1,2) → (3,2,1) → (1,2,3)`. The footer stays pinned at the bottom and the
 current selection and focus are preserved.
 
-**vLLM Memory Breakdown (2-Bar Inspector):** Bar 1 shows non-overlapping VRAM composition
-(`Weights [Init profile]`, `KV Cache Allocated`, and `Other/Unattributed [NVML diff, derived]`);
-`Activation Peak` (`[Init peak, NOT current]`) is separated from Bar 1 and `Activation Current` stays
-`N/A [requires instrumentation]`. Bar 2 shows logical occupancy inside the KV Cache Pool (`Occupied`,
-which includes prefix-cached blocks, vs `Available`), while `Active Requests KV` stays
-`N/A [requires instrumentation]`. Stale init logs are flagged and withheld from Bar 1.
+**vLLM Memory Breakdown (Inspector):** The unified VRAM bar shows non-overlapping composition
+(`Model Weights [Init profile]`, `Activation Peak Budget`, `KV Cache Used`, `KV Cache Unused`,
+and `Other/Unattributed [NVML diff, derived]`); `Activation Peak` (`[Init peak, NOT current]`)
+is labeled separately from live activations and `Activation Current` stays
+`N/A [requires instrumentation]`, while `Active Requests KV` stays `N/A [requires instrumentation]`.
+Stale init logs are flagged and withheld from the VRAM bar.
 
 All eight trend charts are visible by default. They stack in narrow terminals and
 share rows when there is room. Click the **Charts** dropdown to show all charts or
@@ -254,7 +254,7 @@ def _short_ts(ts: str | None) -> str | None:
 
 
 def render_vllm_breakdown(bd: VllmMemoryBreakdown, v: LlmView, width: int) -> list[Text]:
-    """Render Strategy B vLLM 2-Bar Memory Breakdown as Rich Text lines."""
+    """Render Strategy B vLLM Memory Breakdown as Rich Text lines."""
     lines: list[Text] = []
 
     # Header
@@ -305,15 +305,15 @@ def render_vllm_breakdown(bd: VllmMemoryBreakdown, v: LlmView, width: int) -> li
         if bd.weights_bytes:
             bar1_parts.append((bd.weights_bytes, "dodger_blue2", "Model Weights"))
         if bd.activation_peak_bytes:
-            bar1_parts.append((bd.activation_peak_bytes, "orange1", "Activation Peak Budget"))
+            bar1_parts.append((bd.activation_peak_bytes, "#60afff", "Activation Peak Budget"))
         if bd.kv_allocated_bytes:
             if bd.kv_pool_occupied_bytes is not None and bd.kv_pool_available_bytes is not None:
                 if bd.kv_pool_occupied_bytes > 0:
                     bar1_parts.append((bd.kv_pool_occupied_bytes, "spring_green3", "KV Cache Used"))
                 if bd.kv_pool_available_bytes > 0:
-                    bar1_parts.append((bd.kv_pool_available_bytes, "aquamarine1", "KV Cache Unused"))
+                    bar1_parts.append((bd.kv_pool_available_bytes, "#8e6202", "KV Cache Unused"))
             else:
-                bar1_parts.append((bd.kv_allocated_bytes, "aquamarine1", "KV Cache Pool"))
+                bar1_parts.append((bd.kv_allocated_bytes, "#8e6202", "KV Cache Pool"))
         if bd.other_runtime_bytes is not None:
             # Subtract activation_peak from NVML diff only for visual non-overlap in the stacked bar
             other_vis = max(0, bd.other_runtime_bytes - (bd.activation_peak_bytes or 0))
@@ -376,11 +376,11 @@ def render_vllm_breakdown(bd: VllmMemoryBreakdown, v: LlmView, width: int) -> li
     lines.append(w_line)
 
     act_peak_line = Text()
-    act_peak_line.append("  ■ ", style="orange1" if bd.activation_peak_bytes is not None and not bd.stale else "grey50")
+    act_peak_line.append("  ■ ", style="#60afff" if bd.activation_peak_bytes is not None and not bd.stale else "grey50")
     act_peak_line.append("Activation Peak        ")
     if bd.activation_peak_bytes is not None:
         act_tag = "[Init peak, NOT current, STALE]" if bd.stale else "[Init peak, NOT current]"
-        act_peak_line.append(f"{gb(bd.activation_peak_bytes):>10}", style="yellow" if bd.stale else "bold orange1")
+        act_peak_line.append(f"{gb(bd.activation_peak_bytes):>10}", style="yellow" if bd.stale else "bold #60afff")
         act_peak_line.append(f"  {act_tag}", style="yellow" if bd.stale else "grey62")
     else:
         act_peak_line.append(f"{'N/A':>10}", style="grey62")
@@ -402,10 +402,10 @@ def render_vllm_breakdown(bd: VllmMemoryBreakdown, v: LlmView, width: int) -> li
     lines.append(kv_used_line)
 
     kv_unused_line = Text()
-    kv_unused_line.append("  ■ ", style="aquamarine1" if bd.kv_pool_available_bytes is not None else "grey50")
+    kv_unused_line.append("  ■ ", style="#8e6202" if bd.kv_pool_available_bytes is not None else "grey50")
     kv_unused_line.append("KV Cache Unused        ")
     if bd.kv_pool_available_bytes is not None:
-        kv_unused_line.append(f"{gb(bd.kv_pool_available_bytes):>10}", style="bold aquamarine1")
+        kv_unused_line.append(f"{gb(bd.kv_pool_available_bytes):>10}", style="bold #8e6202")
         kv_unused_line.append("  [derived]", style="grey62")
     else:
         kv_unused_line.append(f"{'N/A':>10}", style="grey62")
@@ -456,20 +456,6 @@ def render_vllm_breakdown(bd: VllmMemoryBreakdown, v: LlmView, width: int) -> li
         act_cur_line.append(f"{'N/A':>10}", style="grey62")
         act_cur_line.append("  [requires instrumentation]", style="grey62")
     lines.append(act_cur_line)
-
-    # Bar 2: KV Cache Pool (logical occupancy inside KV Allocated)
-    lines.append(Text("KV Cache Pool", style="bold spring_green3"))
-    bar2_width = max(12, min(width - 36, 60))
-    if bd.kv_pool_usage_ratio is not None:
-        ratio = max(0.0, min(1.0, bd.kv_pool_usage_ratio))
-        occ_pct = ratio * 100.0
-        avail_pct = max(0.0, 100.0 - occ_pct)
-        bar2 = Text("KV   ")
-        bar2.append_text(stacked_bar([(ratio, "spring_green3"), (max(0.0, 1.0 - ratio), "aquamarine1")], 1.0, bar2_width))
-        bar2.append(f"  Occupied {occ_pct:.1f}% · Available {avail_pct:.1f}%", style="grey70")
-        lines.append(bar2)
-    else:
-        lines.append(Text("KV   N/A  [metrics unavailable]", style="grey62"))
 
     kv_act_line = Text("  Active Requests KV     ")
     if bd.kv_active_request_bytes is not None:

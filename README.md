@@ -3,7 +3,7 @@
 **An `htop` for what's inside your GPU — extended for vLLM GPU Memory Breakdown, optional `config.yaml` endpoint/log knobs, and 3-pane TUI layout cycling.**
 
 > **Upstream Credit & Versioning Policy**: This repository is a vLLM-focused fork of [**shanselman/gputaskman**](https://github.com/shanselman/gputaskman) (`v0.4.5`, MIT License, Copyright Scott Hanselman).
-> To respect upstream versioning without bumping upstream patch numbers, releases use PEP 440 local SemVer tags on top of the upstream base: **`0.4.5+vllm.<major>.<minor>.<patch>`** (currently `0.4.5+vllm.0.1.0`).
+> To respect upstream versioning without bumping upstream patch numbers, releases use PEP 440 local SemVer tags on top of the upstream base: **`0.4.5+vllm.<major>.<minor>.<patch>`** (currently `0.4.5+vllm.0.1.1`).
 > Full upstream platform documentation (Windows WDDM/TCC, Linux DRM/Ascend, WSL2, macOS Metal, `diff`/`record`/`summary`/`replay`) is preserved in [docs/UPSTREAM_README.md](docs/UPSTREAM_README.md).
 
 ---
@@ -28,7 +28,7 @@ uv tool install .
 
 ```bash
 gputaskman --version
-# gputaskman 0.4.5+vllm.0.1.0
+# gputaskman 0.4.5+vllm.0.1.1
 ```
 
 ### 2) 실행 방법 — 무설정 자동 감지 vs 임의 폴더 `--config <yaml>`
@@ -53,7 +53,7 @@ gputaskman --version
   gputaskman --config /tmp/my_vllm.yaml --once
   gputaskman --config /tmp/my_vllm.yaml --json
   ```
-  - Docker 컨테이너나 원격 서버처럼 로컬 `/proc`에 `VLLM::EngineCore` PID가 보이지 않는 환경에서도, `config.yaml`에 적은 엔드포인트가 전용 행(`C:1`)으로 자동 생성되어 동일한 **vLLM 2-Bar Memory Breakdown**을 보여줍니다.
+  - Docker 컨테이너나 원격 서버처럼 로컬 `/proc`에 `VLLM::EngineCore` PID가 보이지 않는 환경에서도, `config.yaml`에 적은 엔드포인트가 전용 행(`C:1`)으로 자동 생성되어 동일한 **vLLM Memory Breakdown**을 보여줍니다.
 
 ### 3) 주요 TUI 단축키
 
@@ -70,9 +70,9 @@ gputaskman --version
 
 ---
 
-## What's New in `gputaskman-vllm` (`0.4.5+vllm.0.1.0`)
+## What's New in `gputaskman-vllm` (`0.4.5+vllm.0.1.1`)
 
-### 1. Non-Invasive Strategy B vLLM Memory Breakdown (2-Bar TUI + Additive `--json`/`--once`)
+### 1. Non-Invasive Strategy B vLLM Memory Breakdown (TUI + Additive `--json`/`--once`)
 
 Combines read-only vLLM HTTP endpoints (`/v1/models`, `/metrics` including `vllm:cache_config_info`), bounded/mtime-cached vLLM startup logs (V0/V1 `INFO`, `DEBUG`, and JSON log lines), and NVML GPU telemetry without modifying vLLM source code:
 
@@ -90,8 +90,6 @@ VRAM █████████████████████████
   ■ Other/Unattributed            N/A  [requires reconciliation]
     CUDA Graph                  41 MB  [Init profile]
     Activation Current            N/A  [requires instrumentation]
-KV Cache Pool
-KV   ████████████████████████████████████████████████████████  Occupied 0.0% · Available 100.0%
   Active Requests KV            N/A  [requires instrumentation]
   Running / Waiting           0 / 0
   KV config: blocks 5,120 · block_size 64 · capacity 327,680 tokens · dtype auto · prefix_cache on
@@ -120,7 +118,7 @@ See [gputaskman.yaml.example](gputaskman.yaml.example) for a complete template.
 
 **Path & Topology stability**:
 - Relative `log_path` / `log_paths` entries inside a YAML file are resolved relative to **that YAML file's directory**, so `gputaskman --config /any/folder/vllm.yaml` works regardless of your current working directory.
-- **Docker / Sidecar / Remote vLLM**: When no local `/proc` PID matches a configured endpoint, `gputaskman-vllm` synthesizes a dedicated read-only row (`C:1`, `origin: "config"`, `vram_attributed: false`, never added to `Snapshot.attributed`) so you still get the full vLLM 2-Bar Memory Breakdown and live metrics.
+- **Docker / Sidecar / Remote vLLM**: When no local `/proc` PID matches a configured endpoint, `gputaskman-vllm` synthesizes a dedicated read-only row (`C:1`, `origin: "config"`, `vram_attributed: false`, never added to `Snapshot.attributed`) so you still get the full vLLM Memory Breakdown and live metrics.
 - **Secrets safety**: Prefer `api_key_env: MY_VLLM_KEY` over inline `api_key`. API keys are never logged, serialized to JSON, or sent to `/metrics`.
 
 ### 3. 3-Pane Vertical Layout Cycling (`l`)
